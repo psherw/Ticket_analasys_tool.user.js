@@ -1,0 +1,477 @@
+// ==UserScript==
+// @name         Ticket Analysis
+// @namespace    ADC FOC Event Analysis
+// @version      1.0
+// @description  Collect and format ticket data for AI processing
+// @author       jolleyranger
+// @match        https://t.corp.amazon.com/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// ==/UserScript==
+
+(function() {
+    'use strict';
+    const SITES = {
+        A: {
+            domain: 't.corp.amazon.com',
+            selectors: {
+                ticketTitle: '#sim-title',
+                markdownPreview: '.markdown-preview',
+                overviewContent: '.overview-content-children > div:nth-child(1)',
+                commentsSection: '.sim-communicationView',
+                commentItem: '.sim-infiniteScrollDOMList--item',
+                commentText: '[id$="-comment-text"]',
+                commentTimestamp: 'div:nth-child(2) > div:nth-child(2) > div:nth-child(1) > div:nth-child(1) > div:nth-child(1)'
+            }
+        }
+    };
+
+    function isDarkMode() {
+        return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+
+    function findSectionContent(container, sectionTitle) {
+        if (!container) {
+            console.warn('Markdown preview container not found');
+            return '';
+        }
+
+        const headers = container.querySelectorAll('h2');
+        for (let header of headers) {
+            if (header.textContent.trim().toLowerCase() === sectionTitle.toLowerCase()) {
+                // Get the next element after the header
+                let content = '';
+                let nextElement = header.nextElementSibling;
+
+                // Collect content until we hit another h2 or run out of siblings
+                while (nextElement && nextElement.tagName !== 'H2') {
+                    if (nextElement.tagName === 'P') {
+                        content += nextElement.textContent.trim() + '\n';
+                    } else if (nextElement.tagName === 'UL' || nextElement.tagName === 'OL') {
+                        const items = nextElement.querySelectorAll('li');
+                        items.forEach(item => {
+                            content += `${item.textContent.trim()}\n`;
+                        });
+                    }
+                    nextElement = nextElement.nextElementSibling;
+                }
+                return content.trim();
+            }
+        }
+        console.warn(`Section "${sectionTitle}" not found`);
+        return '';
+    }
+
+
+    function collectTicketData() {
+        // Get the markdown preview container
+        const markdownPreview = document.querySelector(SITES.A.selectors.markdownPreview);
+
+        // Define section titles to look for
+        const sections = {
+            problemSummary: 'Problem Summary',
+            rootCause: 'Root Cause',
+            actionItems: 'Action Items',
+            timeline: 'Timeline of Actions'
+        };
+
+        // Collect data for each section
+        const problemSummaryText = findSectionContent(markdownPreview, sections.problemSummary);
+        const rootCauseText = findSectionContent(markdownPreview, sections.rootCause);
+        const actionItemsText = findSectionContent(markdownPreview, sections.actionItems);
+        const timelineText = findSectionContent(markdownPreview, sections.timeline);
+
+        console.log('Problem Summary found:', !!problemSummaryText);
+        console.log('Root Cause found:', !!rootCauseText);
+        console.log('Action Items found:', !!actionItemsText);
+        console.log('Timeline found:', !!timelineText);
+
+        // Format timeline if needed
+        const formattedTimeline = timelineText ? timelineText
+            .split('\n')
+            .map((line, index) => {
+                // Your existing timeline formatting logic here
+                const cleanLine = line.replace(/\*+/g, '').trim();
+                const timeMatch = cleanLine.match(/\d{4}-\d{2}-\d{2}\s+(\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)\s+\(UTC\))/i);
+                if (timeMatch) {
+                    const convertedTime = convertTo24Hour(timeMatch[1]);
+                    const restOfLine = cleanLine.split('-').slice(1).join('-').trim();
+                    return `${index + 1}. ${convertedTime} - ${restOfLine}`;
+                }
+                return `${index + 1}. ${cleanLine}`;
+            })
+            .join('\n') : '';
+
+        return {
+            ticket: {
+                title: document.querySelector(SITES.A.selectors.ticketTitle)?.textContent?.trim().toUpperCase() || 'NO TITLE AVAILABLE',
+                synopsis: {
+                    problemSummary: problemSummaryText || 'No Problem Summary available',
+                    rootCauseAnalysis: rootCauseText || 'No Root Cause/Resolution available',
+                    actionItems: actionItemsText || 'No Action Items available',
+                    timelineActions: formattedTimeline || 'No Timeline of Actions available'
+                },
+                overview: document.querySelector(SITES.A.selectors.overviewContent)?.textContent?.trim() || 'No overview available'
+            },
+            comments: collectComments(),
+            sourceUrl: window.location.href,
+            collectedAt: new Date().toISOString()
+        };
+    }
+
+    function collectComments() {
+        const commentsSection = document.querySelector(SITES.A.selectors.commentsSection);
+        const commentElements = commentsSection?.querySelectorAll(SITES.A.selectors.commentItem) || [];
+
+        return Array.from(commentElements).map(comment => {
+            return {
+                text: comment.querySelector(SITES.A.selectors.commentText)?.textContent?.trim() || '',
+                timestamp: comment.querySelector(SITES.A.selectors.commentTimestamp)?.textContent?.trim() || ''
+            };
+        });
+    }
+
+    function formatTimelineComments(comments) {
+        if (!comments || comments.length === 0) {
+            return 'No comments available';
+        }
+
+        return comments
+            .map(comment => {
+                // Extract only the actual comment text without the timestamp
+                const textParts = comment.text.split('-');
+                const actualText = textParts.length > 1 ?
+                    textParts.slice(1).join('-').trim() :
+                    comment.text.trim();
+
+                const cleanText = actualText
+                    .replace(/^\*+\s*/gm, '')
+                    .replace(/\*+/g, '')
+                    .replace(/^\s+/gm, '')
+                    .replace(/\s+$/gm, '')
+                    .replace(/\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+(?:AM|PM)\s+\(UTC\)/g, '')
+                    .trim();
+
+                // Get and format the timestamp
+                const timestamp = comment.timestamp
+                    .replace(/^\*+\s*/gm, '')
+                    .replace(/\*+/g, '')
+                    .trim();
+
+                const formattedTime = convertTo24Hour(timestamp);
+
+                return `${formattedTime} - ${cleanText}`;
+            })
+            .join('\n')
+            .replace(/\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+(?:AM|PM)\s+\(UTC\)\s*-\s*/g, '');
+    }
+
+    function convertTo24Hour(timeStr) {
+        if (!timeStr) return '';
+
+        timeStr = timeStr.replace(/\d{4}-\d{2}-\d{2}\s+/, '');
+        const [time, period, timezone] = timeStr.split(' ');
+        const [hours, minutes, seconds] = time.split(':');
+        let hour = parseInt(hours, 10);
+
+        if (period && period.toUpperCase() === 'PM' && hour < 12) {
+            hour += 12;
+        }
+        if (period && period.toUpperCase() === 'AM' && hour === 12) {
+            hour = 0;
+        }
+
+        const formattedHour = hour.toString().padStart(2, '0');
+        return `${formattedHour}:${minutes}:${seconds} ${timezone}`;
+    }
+
+    function formatDataForAI(data) {
+        let timeline = formatTimelineComments(data.comments);
+
+        // Remove extra newlines
+        timeline = timeline.replace(/\n\n+/g, '\n');
+
+        let formattedData = `COLLECTED TICKET DATA:
+            Title: ${data.ticket.title}
+
+            Problem Summary:
+            ${data.ticket.synopsis.problemSummary}
+
+            Root Cause/Resolution:
+            ${data.ticket.synopsis.rootCauseAnalysis}
+
+            Action Items:
+            ${data.ticket.synopsis.actionItems}
+
+            Timeline of Actions:
+            ${data.ticket.synopsis.timelineActions}
+
+            Overview: ${data.ticket.overview}
+
+            Timeline of Comments:
+            ${timeline}
+
+            Source URL: ${data.sourceUrl}
+            Collected At: ${data.collectedAt}
+
+
+            ========================================================================
+            INSTRUCTIONS FOR AI:
+            Please analyze the above data and generate a formatted summary. Format the FOC EVENT SUMMARY section as a markdown table using the template below.
+            The rest of the sections should maintain their original format.
+
+            Example table format:
+            | Field | Answer |
+            |-------|---------|
+            | LOR, CSE, or LSE | [Answer] |
+            | Event Type | [Answer] |
+
+            ========================================================================
+                                                **FOC EVENT SUMMARY**
+
+            | Field | Answer |
+            |-------|---------|
+            | LOR, CSE, or LSE | [Determine from severity and scope] |
+            | Event Type | [Extract from title/content - Power/Cooling/Network/Other] |
+            | Incident Start Time | [First reported time in HH:mm UTC] |
+            | Current Status | [Initial/Ongoing/Completed] |
+            | Initial Impacted Racks and Time | XX EC2, XX Network, XX Prod |
+            | Current Impacted Racks and Time | XX EC2, XX Network, XX Prod |
+            | Total Impact Time | [Calculate from timeline] |
+            | Blast Radius (for Equipment or Site) | XX EC2, XX Network, XX Prod |
+            | Root Cause | [Extract from Root Cause Analysis section] |
+            | Final Resolution Time | [Last update time if resolved] |
+            | Vendor or Support Team Engagement | [Extract from comments if mentioned] |
+            | Alarms Types Received by the FOC? | [Extract from content if mentioned] |
+            | DCEO Incident Commander | |
+            | DCEO First Responder | |
+            | FOC Call Facilitator | |
+
+            ========================================================================
+                                                **EVENT SUMMARY**
+            ------------------------------------------------------------------------------------------------------------
+            [Provide concise summary following the what/where/why/how format]
+
+            ========================================================================
+                                                **ROOT CAUSE ANALYSIS**
+            ------------------------------------------------------------------------------------------------------------
+            [Insert detailed root cause analysis from the synopsis]
+
+            ========================================================================
+                                                **ACTION ITEMS**
+            ------------------------------------------------------------------------------------------------------------
+            [Insert action items from the synopsis]
+
+            ========================================================================
+                                                **TIMELINE OF EVENTS**
+            ------------------------------------------------------------------------------------------------------------
+            [Insert chronologically ordered timeline here]
+
+            ========================================================================
+                                                **SLA METRICS**
+            ------------------------------------------------------------------------------------------------------------
+            | Task | Time to Action (minutes) | SLA Req | Variance (+/-) |
+            |------|-------------------------|----------|----------------|
+            | Event Start | 0 | | |
+            | Ticket Creation | [minutes from event] | 9 | [Time - 9] |
+            | Bridge Creation | [minutes from event] | 9 | [Time - 9] |
+            | Paging | [minutes from event] | 9 | [Time - 9] |
+            | Initial Broadcast | [minutes from event] | 30 | [Time - 30] |
+            ========================================================================
+            INSTRUCTIONS FOR AI:
+            Please analyze the above data and generate a formatted summary. Format the FOC EVENT SUMMARY section as a markdown table using the template provided.
+            For the SLA METRICS table, please:
+            1. Find the earliest timestamp in the timeline for Event Start (this becomes time 0)
+            2. For each subsequent task:
+                - Calculate minutes elapsed from Event Start time
+                - Compare against SLA requirement
+                - Calculate variance (Time to Action - SLA Req)
+                - Show positive variance for times over SLA (delayed response)
+                - Show negative variance for times under SLA (early response)
+            3. Example:
+                If Event Start is 10:00:00 and Ticket Creation is 10:07:00
+                - Time to Action = 7 minutes
+                - SLA Req = 9 minutes
+                - Variance = 7 - 9 = -2 (2 minutes ahead of SLA)
+            4. Leave cells blank if information cannot be found`;
+        return formattedData;
+    }
+
+    function setupSiteA() {
+        const buttonContainer = document.createElement('div');
+        buttonContainer.className = 'data-collector-container';
+
+        const headerElement = document.querySelector('header.awsui_top-navigation_k5dlb_2ayr9_145 > div:nth-child(1)');
+
+        const button = document.createElement('button');
+        button.innerHTML = 'Click Me!';
+        button.className = 'collect-button';
+
+        const resultDisplay = document.createElement('div');
+        resultDisplay.id = 'resultDisplay';
+        resultDisplay.className = 'result-display hidden';
+
+        // Check for existing synopsis data
+        function checkSynopsisData() {
+            const markdownPreview = document.querySelector('.markdown-preview');
+            if (markdownPreview) {
+                button.disabled = false;
+                button.style.backgroundColor = '#4f95d3';
+            } else {
+                button.disabled = true;
+                button.style.backgroundColor = '#a5c6e3';
+            }
+        }
+
+        checkSynopsisData(); // Run on page load
+
+        button.addEventListener('click', async () => {
+            const markdownPreview = document.querySelector('.markdown-preview');
+            if (markdownPreview) {
+                resultDisplay.className = 'result-display show';
+                resultDisplay.innerHTML = 'Collecting and copying data...';
+
+                try {
+                    const ticketData = collectTicketData();
+                    const collectedData = formatDataForAI(ticketData);
+                    console.log('Collected Data:', collectedData);
+
+                    try {
+                        await navigator.clipboard.writeText(collectedData);
+                        resultDisplay.innerHTML = `<small><b>Data collected and copied! ✓</b></small>`;
+                    } catch (clipboardError) {
+                        console.error('Clipboard error:', clipboardError);
+                        // Fallback method
+                        const textArea = document.createElement('textarea');
+                        textArea.value = collectedData;
+                        document.body.appendChild(textArea);
+                        textArea.select();
+                        try {
+                            document.execCommand('copy');
+                            resultDisplay.innerHTML = `<small><b>Data collected and copied! ✓</b></small>`;
+                        } catch (fallbackError) {
+                            console.error('Fallback clipboard error:', fallbackError);
+                            resultDisplay.innerHTML = `<small>Error copying to clipboard. Please try again.</small>`;
+                        }
+                        document.body.removeChild(textArea);
+                    }
+                } catch (error) {
+                    resultDisplay.innerHTML = `<small>Error: ${error.message}</small>`;
+                    console.error('Data extraction error:', error);
+                }
+
+                setTimeout(() => {
+                    resultDisplay.className = 'result-display hidden';
+                }, 3000);
+            } else {
+                resultDisplay.className = 'result-display show';
+                resultDisplay.innerHTML = `<small>Synopsis data not found. Please generate the summary first.</small>`;
+                setTimeout(() => {
+                    resultDisplay.className = 'result-display hidden';
+                }, 3000);
+            }
+        });
+
+        const styles = `
+            .data-collector-container {
+                position: absolute;
+                top: 13px;
+                left: 752px;
+                z-index: 1000;
+                display: flex;
+                gap: 8px;
+            }
+            .collect-button {
+                background-color: #4f95d3;
+                color: white;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: bold;
+                font-size: 14px;
+                transition: all 0.3s ease;
+            }
+            .collect-button:hover {
+                background-color: #60a6e4;
+            }
+            .collect-button:disabled {
+                background-color: #a5c6e3;
+                cursor: not-allowed;
+            }
+            .result-display {
+                position: fixed;
+                top: 55px;
+                left: 752px;
+                padding: 10px 20px;
+                border-radius: 4px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                z-index: 1000;
+                font-size: 13px;
+                transition: opacity 0.3s ease-in-out;
+                opacity: 1;
+                border-left: 4px solid #4f95d3;
+                background: ${isDarkMode() ? '#2d2d2d' : '#f8f9fa'};
+                color: ${isDarkMode() ? '#ffffff' : '#000000'};
+            }
+            .result-display.hidden {
+                opacity: 0;
+                pointer-events: none;
+            }
+            .result-display.show {
+                opacity: 1;
+                pointer-events: auto;
+            }
+        `;
+
+
+
+        const styleElement = document.createElement('style');
+        styleElement.textContent = styles;
+        document.head.appendChild(styleElement);
+
+        // Listen for dark mode changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+        const resultDisplay = document.querySelector('.result-display');
+        if (resultDisplay) {
+            resultDisplay.style.background = e.matches ? '#2d2d2d' : '#f8f9fa';
+            resultDisplay.style.color = e.matches ? '#ffffff' : '#000000';
+        }
+    });
+
+        if (headerElement) {
+            headerElement.appendChild(buttonContainer);
+        } else {
+            document.body.appendChild(buttonContainer);
+        }
+
+        buttonContainer.appendChild(button);
+        buttonContainer.appendChild(resultDisplay);
+
+        // Mutation Observer to watch for changes to the DOM
+        const observer = new MutationObserver(mutations => {
+            mutations.forEach(mutation => {
+                if (mutation.addedNodes) {
+                    mutation.addedNodes.forEach(node => {
+                        if (node.querySelector && node.querySelector('.markdown-preview')) {
+                            checkSynopsisData();
+                            observer.disconnect(); // Stop observing once found
+                        }
+                    });
+                }
+            });
+        });
+
+        // Start observing the document body for added nodes
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    function initialize() {
+        const currentSite = window.location.hostname;
+        if (currentSite.includes(SITES.A.domain)) {
+            setupSiteA();
+        }
+    }
+
+    initialize();
+})();
