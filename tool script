@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ticket Analysis
 // @namespace    ADC FOC Event Analysis
-// @version      1.0
+// @version      1.1
 // @description  Collect and format ticket data for AI processing
 // @author       jolleyranger
 // @match        https://t.corp.amazon.com/*
