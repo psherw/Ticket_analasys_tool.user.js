@@ -272,7 +272,7 @@
             ------------------------------------------------------------------------------------------------------------
             | Task | Time to Action (minutes) | SLA Req | Variance (+/-) |
             |------|-------------------------|----------|----------------|
-            | Event Start | 0 | | |
+            | Event Start | [ticket creation time] | | |
             | Ticket Creation | [minutes from event] | 9 | [Time - 9] |
             | Bridge Creation | [minutes from event] | 9 | [Time - 9] |
             | Paging | [minutes from event] | 9 | [Time - 9] |
@@ -475,3 +475,4 @@
 
     initialize();
 })();
+
